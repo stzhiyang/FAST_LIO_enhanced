@@ -1,0 +1,11 @@
+<launch>
+  <arg name="config" default="$(find loop_fusion)/config/loop_closure.yaml"/>
+  <arg name="output_directory" default="/tmp/fastlio_loop_results"/>
+  <arg name="rviz" default="true"/>
+  <node pkg="loop_fusion" type="fastlio_loop" name="fastlio_loop" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+    <param name="output/directory" value="$(arg output_directory)"/>
+  </node>
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="loop_rviz"
+        args="-d $(find loop_fusion)/rviz_cfg/loop_compare.rviz"/>
+</launch>

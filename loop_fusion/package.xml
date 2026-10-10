@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>loop_fusion</name>
+  <version>0.1.0</version>
+  <description>Scan Context retrieval, ICP verification and incremental Pose3 loop fusion for FAST-LIO.</description>
+  <maintainer email="maintainer@example.com">FAST_LIO_enhanced maintainers</maintainer>
+  <license>BSD-3-Clause</license>
+  <author>Giseop Kim (Scan Context)</author>
+  <author>Ayoung Kim (Scan Context)</author>
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>roscpp</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>eigen</depend>
+  <depend>gtsam</depend>
+  <exec_depend>rviz</exec_depend>
+</package>

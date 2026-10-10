@@ -1,0 +1,44 @@
+frame_id: camera_init
+body_frame_id: body
+corrected_body_frame_id: body_loop
+odom_topic: /Odometry
+highrate_odom_topic: /Odometry_highrate
+cloud_topic: /cloud_registered_body
+sync:
+  buffer_size: 200
+  max_pending_pairs: 3000
+keyframe:
+  translation: 0.5             # m, accumulated traveled distance
+  rotation_deg: 10.0           # accumulated SO(3) angle
+  voxel: 0.4                  # m, SC-PGO scan / ICP voxel size
+  min_points: 100
+sc:
+  rings: 20
+  sectors: 60
+  max_radius: 80.0            # m
+  height_offset: 2.0          # height encoding offset used by SC-PGO
+  gravity_align: false        # optional leveling of descriptors only
+  distance_threshold: 0.3
+  candidates: 3
+  exclude_recent: 30
+  detection_frequency: 1.0    # Hz in sensor time, independent of playback speed
+  min_time_interval: 0.0      # s; recent-frame exclusion remains active
+  accepted_loop_interval: 0.0 # s; candidate queries already limited to 1 Hz
+submap:
+  neighbors: 25              # each neighbor uses its own optimized pose
+icp:
+  max_correspondence: 150.0   # m, virtual-relative search; not the acceptance error
+  iterations: 100
+  max_fitness: 0.3           # m^2, PCL mean squared nearest-neighbor distance
+noise:                       # Pose3: rotation then translation, STANDARD DEVIATIONS
+  prior_rotation_sigma: 0.000001 # sqrt(1e-12), rad
+  prior_translation_sigma: 0.000001 # sqrt(1e-12), m
+  odom_rotation_sigma: 0.001 # sqrt(1e-6), rad
+  odom_translation_sigma: 0.01 # sqrt(1e-4), m
+  loop_rotation_sigma: 0.7071067811865476 # sqrt(0.5), rad
+  loop_translation_sigma: 0.7071067811865476 # sqrt(0.5), m
+  cauchy: 1.0
+output:
+  directory: /tmp/fastlio_loop_results
+  map_voxel: 0.3            # m, same voxel size for raw / optimized maps
+  map_period: 10.0          # wall seconds; independent map worker

@@ -2,14 +2,15 @@
 
 **面向无人机定位与三维建图的激光惯性里程计**
 
-基于 FAST-LIO2，融合激光雷达与 IMU 数据完成运动状态估计和三维点云建图。已实现 IMU 高频里程计，在激光帧更新之间持续输出位姿、线速度与角速度。
+基于 FAST-LIO2，融合激光雷达与 IMU 数据完成运动状态估计和三维点云建图。支持 IMU 高频里程计，以及 Scan Context 回环检测、ICP 几何验证和增量位姿图优化。
 
-主要技术栈：**C++14、ROS Noetic、Eigen、PCL、IKFoM、ikd-Tree**。
+主要技术栈：**C++14、ROS Noetic、Eigen、PCL、GTSAM、IKFoM、ikd-Tree**。
 
 ## 功能
 
 - **激光惯性融合与建图**：通过迭代误差状态卡尔曼滤波完成状态估计，结合点云运动补偿、scan-to-map 匹配和 ikd-Tree 增量地图维护完成建图。
 - **高频里程计（已实现）**：使用 IMU 中值积分传播运动状态，激光校正后同步状态并重传播缓存 IMU，发布 `/Odometry_highrate`。
+- **回环检测与位姿图优化（已实现）**：使用 Scan Context 检索历史候选，通过虚拟相对 ICP 验证后添加 Pose3 回环边，使用 GTSAM iSAM2 更新历史轨迹与地图，并提供普通／高频里程计的全局修正输出。
 - **Livox 驱动接口**：采用 `livox_ros_driver2` 消息接口；AVIA、MID360 与 HKU Campus 启动配置默认开启高频里程计，支持参数开关。
 - **ROS 可视化接口**：输出里程计、配准点云、轨迹及坐标变换，支持 RViz 查看定位与建图结果。
 
@@ -29,25 +30,46 @@
 
 <!-- highrate-comparison:end -->
 
+## 回环检测
+
+按累计位移和转角选取关键帧，使用 Scan Context 检索历史回环候选。将当前扫描虚拟放到历史位置附近，与按各邻帧位姿拼接的历史子图进行 ICP 配准，通过匹配误差检查后添加回环约束。使用 GTSAM iSAM2 优化历史轨迹与地图。
+
+`loop_fusion` 按相同时间戳配对前端里程计与 body 点云，回环处理与地图重建分别在后台线程运行。根据最近关键帧的原始／优化位姿计算全局修正，同时发布 `/loop/odometry` 和 `/loop/odometry_highrate`；原 `/Odometry` 与 `/Odometry_highrate` 保持连续的局部估计。全局输出在回环修正时可能跳变。
+
+### 效果对比
+
+MulRan Riverside02 数据集上的轨迹与地图对比。左侧 **Before** 为前端原始结果，右侧 **After** 为回环优化结果；重访区域的地图重影减轻，轨迹闭合更一致。
+
+![Riverside02 回环前后轨迹与地图对比：左侧 Before，右侧 After](assets/riverside02_loop_comparison.png)
+
 ## 工程结构
 
 ```text
 FAST_LIO_enhanced/
 ├── FAST_LIO/
-│   ├── config/                 # 传感器、外参与估计参数
+│   ├── config/                 # 传感器、外参与估计参数，含 Riverside02
 │   ├── include/                # 状态定义、滤波与地图数据结构
-│   ├── launch/                 # ROS 启动配置
+│   ├── launch/                 # 前端启动、数据集与 ROS bag 播放
+│   ├── scripts/                # Riverside02 点云与 IMU 数据读取
 │   ├── src/
 │   │   ├── imu_odometry.hpp    # 高频 IMU 传播与状态同步
 │   │   ├── IMU_Processing.hpp  # IMU 初始化与点云运动补偿
 │   │   └── laserMapping.cpp    # 激光惯性估计、建图与输出
 │   ├── CMakeLists.txt
 │   └── package.xml
+├── loop_fusion/
+│   ├── config/                # 回环参数
+│   ├── include/scancontext/  # 描述子与 KD-tree
+│   ├── launch/               # 独立回环后端启动
+│   ├── rviz_cfg/             # 原始/优化轨迹与地图对比
+│   └── src/                  # 输入配对、回环验证、iSAM2 与结果导出
 └── README.md
 ```
 
-ROS 包名为 `fast_lio`，主节点为 `fastlio_mapping`。
+前端 ROS 包名为 `fast_lio`，主节点为 `fastlio_mapping`；回环包名为 `loop_fusion`，后端节点为 `fastlio_loop`。
 
 ## 上游与授权
 
 本项目基于 FAST_LIO 扩展。上游作者信息、论文引用及使用说明见 [FAST_LIO README](FAST_LIO/README.md)，授权条款见 [FAST_LIO/LICENSE](FAST_LIO/LICENSE)。
+
+Scan Context 作者为 Giseop Kim 与 Ayoung Kim，论文为 *Scan Context: Egocentric Spatial Descriptor for Place Recognition within 3D Point Cloud Map*（IROS 2018），项目见 [Scan Context](https://github.com/gisbi-kim/scancontext_tro)。SC-PGO 作者为 Giseop Kim，项目见 [FAST_LIO_SLAM](https://github.com/gisbi-kim/FAST_LIO_SLAM)。nanoflann 与 KD-tree 适配器的作者、版权和 BSD 授权声明保留在对应源码中。
