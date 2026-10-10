@@ -1,0 +1,23 @@
+# Workspace and build products
+build/
+devel/
+install/
+logs/
+.catkin_tools/
+.migration_backups/
+# Recorded data and generated maps
+*.bag
+*.bag.active
+*.pcd
+FAST_LIO/Log/*.txt
+FAST_LIO/Log/*.csv
+FAST_LIO/Log/*.png
+FAST_LIO/Log/*.pdf
+# Local documentation and agent instructions
+docs/
+/AGENTS.md
+# Local editor and Python cache
+.vscode/
+__pycache__/
+*.pyc
+
