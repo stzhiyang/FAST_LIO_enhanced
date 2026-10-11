@@ -18,6 +18,8 @@
 #include <boost/filesystem.hpp>
 #include <Eigen/Geometry>
 #include <condition_variable>
+#include <csignal>
+#include <ctime>
 #include <deque>
 #include <fstream>
 #include <future>
@@ -25,9 +27,15 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <thread>
 
 namespace loop_fusion {
+namespace {
+volatile std::sig_atomic_t exit_requested = 0;
+void signalHandler(int) { exit_requested = 1; }
+}  // namespace
+
 struct Keyframe {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   size_t id;
@@ -37,7 +45,12 @@ struct Keyframe {
   Eigen::Matrix3d level_from_body;
 };
 using Keyframes = std::vector<Keyframe, Eigen::aligned_allocator<Keyframe>>;
-struct MapSnapshot { Keyframes keyframes; size_t revision; };
+struct MapSnapshot {
+  Keyframes keyframes;
+  size_t revision;
+  bool export_files = false;
+  std::shared_ptr<std::promise<std::string>> save;
+};
 struct Task {
   nav_msgs::OdometryConstPtr odom;
   sensor_msgs::PointCloud2ConstPtr cloud;
@@ -47,60 +60,55 @@ struct Task {
 class LoopClosure {
  public:
   LoopClosure() : private_("~") {
-    std::ostringstream snapshot;
     auto number = [&](const std::string& name, double value) {
       double result; private_.param(name, result, value);
-      snapshot << name << ": " << std::setprecision(17) << result << '\n';
       return result;
-    };
-    auto integer = [&](const std::string& name, int value) {
-      int result; private_.param(name, result, value);
-      snapshot << name << ": " << result << '\n'; return result;
     };
     auto string = [&](const std::string& name, const std::string& value) {
       std::string result; private_.param(name, result, value);
-      snapshot << name << ": " << std::quoted(result) << '\n'; return result;
+      return result;
     };
-    frame_ = string("frame_id", "camera_init");
-    body_frame_ = string("body_frame_id", "body");
-    const auto odom_topic = string("odom_topic", "/Odometry");
-    const auto cloud_topic = string("cloud_topic", "/cloud_registered_body");
-    const auto highrate_topic = string("highrate_odom_topic", "/Odometry_highrate");
-    corrected_body_frame_ = string("corrected_body_frame_id", "body_loop");
+    frame_ = "camera_init";
+    body_frame_ = "body";
+    const std::string odom_topic = "/Odometry";
+    const std::string cloud_topic = "/cloud_registered_body";
+    const std::string highrate_topic = "/Odometry_highrate";
+    corrected_body_frame_ = "body_loop";
+    // Keep the SC-PGO tuning surface; other settings retain their working values.
     translation_ = number("keyframe/translation", 0.5);
     rotation_ = number("keyframe/rotation_deg", 10.0) * M_PI / 180.0;
-    cloud_voxel_ = number("keyframe/voxel", 0.4);
-    min_points_ = integer("keyframe/min_points", 100);
-    sync_buffer_ = integer("sync/buffer_size", 200);
-    max_queue_ = integer("sync/max_pending_pairs", 3000);
-    sc_.PC_NUM_RING = integer("sc/rings", 20);
-    sc_.PC_NUM_SECTOR = integer("sc/sectors", 60);
+    cloud_voxel_ = 0.4;
+    min_points_ = 100;
+    sync_buffer_ = 200;
+    max_queue_ = 3000;
+    sc_.PC_NUM_RING = 20;
+    sc_.PC_NUM_SECTOR = 60;
     sc_.PC_MAX_RADIUS = number("sc/max_radius", 80.0);
     sc_.PC_UNIT_SECTORANGLE = 360.0 / sc_.PC_NUM_SECTOR;
     sc_.PC_UNIT_RINGGAP = sc_.PC_MAX_RADIUS / sc_.PC_NUM_RING;
-    sc_.LIDAR_HEIGHT = number("sc/height_offset", 2.0);
+    sc_.LIDAR_HEIGHT = 2.0;
     sc_.SC_DIST_THRES = number("sc/distance_threshold", 0.3);
-    sc_.NUM_EXCLUDE_RECENT = integer("sc/exclude_recent", 30);
-    sc_.NUM_CANDIDATES_FROM_TREE = integer("sc/candidates", 3);
-    private_.param("sc/gravity_align", gravity_align_, false);
-    snapshot << "sc/gravity_align: " << (gravity_align_ ? "true" : "false") << '\n';
-    detection_period_ = 1.0 / number("sc/detection_frequency", 1.0);
-    min_interval_ = number("sc/min_time_interval", 0.0);
-    loop_interval_ = number("sc/accepted_loop_interval", 0.0);
-    submap_neighbors_ = integer("submap/neighbors", 25);
-    registration_.max_correspondence = number("icp/max_correspondence", 150.0);
-    registration_.iterations = integer("icp/iterations", 100);
-    registration_.max_fitness = number("icp/max_fitness", 0.3);
-    const double prior_rotation = number("noise/prior_rotation_sigma", 1e-6);
-    const double prior_translation = number("noise/prior_translation_sigma", 1e-6);
-    const double odom_rotation = number("noise/odom_rotation_sigma", 0.001);
-    const double odom_translation = number("noise/odom_translation_sigma", 0.01);
-    const double loop_rotation = number("noise/loop_rotation_sigma", std::sqrt(0.5));
-    const double loop_translation = number("noise/loop_translation_sigma", std::sqrt(0.5));
-    const double cauchy = number("noise/cauchy", 1.0);
+    sc_.NUM_EXCLUDE_RECENT = 30;
+    sc_.NUM_CANDIDATES_FROM_TREE = 3;
+    gravity_align_ = false;
+    detection_period_ = 1.0;
+    min_interval_ = 0.0;
+    loop_interval_ = 0.0;
+    submap_neighbors_ = 25;
+    registration_.max_correspondence = 150.0;
+    registration_.iterations = 100;
+    registration_.max_fitness = 0.3;
+    const double prior_rotation = 1e-6;
+    const double prior_translation = 1e-6;
+    const double odom_rotation = 0.001;
+    const double odom_translation = 0.01;
+    const double loop_rotation = std::sqrt(0.5);
+    const double loop_translation = std::sqrt(0.5);
+    const double cauchy = 1.0;
     map_voxel_ = number("output/map_voxel", 0.3);
-    map_period_ = number("output/map_period", 10.0);
-    const auto output_root = string("output/directory", "/tmp/fastlio_loop_results");
+    map_period_ = 10.0;
+    auto output_root = string("output/directory", "");
+    if (output_root.empty()) output_root = DEFAULT_RESULTS_DIR;
     if (translation_ <= 0 || rotation_ <= 0 || cloud_voxel_ <= 0 || map_voxel_ <= 0 ||
         sync_buffer_ < 1 || max_queue_ < 1 || min_points_ < 1 || sc_.PC_NUM_RING < 1 ||
         sc_.PC_NUM_SECTOR < 4 || sc_.PC_MAX_RADIUS <= 0 || sc_.NUM_EXCLUDE_RECENT < 1 ||
@@ -119,25 +127,19 @@ class LoopClosure {
     params.relinearizeThreshold = 0.01;
     params.relinearizeSkip = 1;
     isam_.reset(new gtsam::ISAM2(params));
-    const boost::filesystem::path root(output_root);
-    boost::filesystem::create_directories(root);
-    output_ = (root / boost::filesystem::unique_path("run-%%%%-%%%%-%%%%")).string();
-    boost::filesystem::create_directory(output_);
-    std::ofstream parameters(output_ + "/parameters.yaml");
-    parameters << snapshot.str();
-    loops_.open(output_ + "/loops.csv");
-    if (!parameters || !loops_) throw std::runtime_error("Cannot write result directory");
-    loops_ << "history_id,current_id,history_stamp,current_stamp,sc_distance,sc_yaw_rad,"
-              "icp_converged,fitness_m2,rmse_m,accepted,reason\n";
-    loops_ << std::setprecision(17);
+    boost::filesystem::create_directories(output_root);
+    const auto root = boost::filesystem::canonical(output_root);
+    const std::time_t start_time = std::time(nullptr);
+    std::tm local_start{};
+    localtime_r(&start_time, &local_start);
+    std::ostringstream run_name;
+    run_name << "run-" << std::put_time(&local_start, "%Y%m%d-%H%M%S");
+    output_ = (root / run_name.str()).string();
+    for (size_t suffix = 2; !boost::filesystem::create_directory(output_); ++suffix)
+      output_ = (root / (run_name.str() + "_" + std::to_string(suffix))).string();
     path_pub_ = node_.advertise<nav_msgs::Path>("/loop/path", 1, true);
-    raw_path_pub_ = node_.advertise<nav_msgs::Path>("/loop/path_raw", 1, true);
     map_pub_ = node_.advertise<sensor_msgs::PointCloud2>("/loop/map", 1, true);
-    raw_map_pub_ = node_.advertise<sensor_msgs::PointCloud2>("/loop/map_raw", 1, true);
     edge_pub_ = node_.advertise<visualization_msgs::MarkerArray>("/loop/edges", 1, true);
-    source_pub_ = node_.advertise<sensor_msgs::PointCloud2>("/loop/source", 1, true);
-    target_pub_ = node_.advertise<sensor_msgs::PointCloud2>("/loop/target", 1, true);
-    aligned_pub_ = node_.advertise<sensor_msgs::PointCloud2>("/loop/aligned", 1, true);
     status_pub_ = node_.advertise<std_msgs::String>("/loop/status", 1, true);
     corrected_odom_pub_ = node_.advertise<nav_msgs::Odometry>("/loop/odometry", 100);
     corrected_highrate_pub_ = node_.advertise<nav_msgs::Odometry>("/loop/odometry_highrate", 1000);
@@ -150,8 +152,25 @@ class LoopClosure {
     worker_ = std::thread(&LoopClosure::work, this);
     ROS_INFO_STREAM("loop_fusion ready; results: " << output_);
   }
-  ~LoopClosure() {
-    { std::lock_guard<std::mutex> lock(mutex_); stopping_ = true; }
+  ~LoopClosure() { stop(); }
+  void stop() {
+    size_t discarded = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stopping_ = true;
+      for (auto& pending : tasks_) {
+        if (pending.save)
+          pending.save->set_exception(std::make_exception_ptr(std::runtime_error("backend stopping")));
+        else ++discarded;
+      }
+      tasks_.clear(); odometry_.clear(); clouds_.clear();
+    }
+    {
+      std::lock_guard<std::mutex> lock(map_mutex_);
+      discard_display_maps_ = true; map_pending_.reset();
+    }
+    if (discarded)
+      ROS_INFO_STREAM("Stopping: discarded " << discarded << " pending scan pairs; saving processed keyframes");
     condition_.notify_all();
     if (worker_.joinable()) worker_.join();
   }
@@ -165,6 +184,7 @@ class LoopClosure {
   void odometry(const nav_msgs::OdometryConstPtr& msg) {
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      if (stopping_) return;
       odometry_[msg->header.stamp.toNSec()] = msg;
       match();
     }
@@ -175,6 +195,7 @@ class LoopClosure {
   }
   void cloud(const sensor_msgs::PointCloud2ConstPtr& msg) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return;
     clouds_[msg->header.stamp.toNSec()] = msg;
     match();
   }
@@ -214,11 +235,11 @@ class LoopClosure {
       {
         std::unique_lock<std::mutex> lock(mutex_);
         condition_.wait(lock, [&] { return stopping_ || !tasks_.empty(); });
-        if (tasks_.empty() && stopping_) break;
+        if (stopping_) break;
         task = std::move(tasks_.front()); tasks_.pop_front();
       }
       if (task.save) {
-        try { exportResults(); task.save->set_value(output_); }
+        try { exportResults(task.save); }
         catch (...) { task.save->set_exception(std::current_exception()); }
         continue;
       }
@@ -231,9 +252,14 @@ class LoopClosure {
         ros::shutdown(); break;
       }
     }
-    stopMapWorker();
-    try { if (!keyframes_.empty()) exportResults(); }
+    try {
+      if (!keyframes_.empty()) {
+        ROS_INFO_STREAM("Saving final map from " << keyframes_.size() << " processed keyframes to " << output_);
+        exportResults();
+      }
+    }
     catch (const std::exception& e) { ROS_ERROR_STREAM("Final loop export failed: " << e.what()); }
+    stopMapWorker();
   }
   void process(const Task& task) {
     if (task.odom->header.frame_id != frame_ || task.cloud->header.frame_id != body_frame_ ||
@@ -329,18 +355,6 @@ class LoopClosure {
         edges_.insert({j, i}); last_loop_stamp_ = keyframes_[i].stamp; loop_added = true;
         ROS_INFO_STREAM("Loop " << j << " -> " << i << ": SC=" << sc_.last_distance << ", fitness=" << result.fitness << " m^2, RMSE=" << result.rmse << " m");
       } else ROS_INFO_STREAM("Rejected loop " << j << " -> " << i << ": " << result.reason << ", fitness=" << result.fitness << " m^2, RMSE=" << result.rmse << " m");
-      // All debug clouds share the current optimized world reference of j.
-      const Eigen::Matrix4d world = keyframes_[j].optimized.matrix();
-      publishCloud(source_pub_, transform(body, world * initial), keyframes_[i].stamp);
-      publishCloud(target_pub_, transform(target, world), keyframes_[i].stamp);
-      publishCloud(aligned_pub_, transform(body, world * result.T_target_source), keyframes_[i].stamp);
-    }
-    if (query_due) {
-      const int j = sc_.last_candidate;
-      loops_ << j << ',' << i << ',' << (j >= 0 ? keyframes_[j].stamp.toSec() : 0) << ',' << keyframes_[i].stamp.toSec() << ','
-             << sc_.last_distance << ',' << candidate.second << ',' << result.converged << ','
-             << result.fitness << ',' << result.rmse << ',' << result.accepted << ',' << result.reason << '\n';
-      loops_.flush();
     }
     if (loop_added || (ros::WallTime::now() - last_path_).toSec() >= 1.0) {
       publishPaths(); publishEdges(); last_path_ = ros::WallTime::now();
@@ -399,25 +413,29 @@ class LoopClosure {
           (updated.matrix() - keyframe.optimized.matrix()).norm() > 1e-8) history_changed = true;
       keyframe.optimized = updated;
     }
-    if (history_changed) ++map_revision_;
+    if (history_changed) {
+      ++map_revision_;
+      std::lock_guard<std::mutex> lock(map_mutex_);
+      latest_requested_revision_ = map_revision_;
+    }
   }
-  geometry_msgs::PoseStamped pose(const Keyframe& keyframe, bool optimized) const {
+  geometry_msgs::PoseStamped pose(const Keyframe& keyframe) const {
     geometry_msgs::PoseStamped msg;
     msg.header.frame_id = frame_; msg.header.stamp = keyframe.stamp;
-    const auto& T = optimized ? keyframe.optimized : keyframe.raw;
+    const auto& T = keyframe.optimized;
     const auto t = T.translation(); const auto q = T.rotation().toQuaternion();
     msg.pose.position.x = t.x(); msg.pose.position.y = t.y(); msg.pose.position.z = t.z();
     msg.pose.orientation.x = q.x(); msg.pose.orientation.y = q.y(); msg.pose.orientation.z = q.z(); msg.pose.orientation.w = q.w();
     return msg;
   }
   void publishPaths() {
-    nav_msgs::Path optimized, raw;
-    optimized.header.frame_id = raw.header.frame_id = frame_;
-    optimized.header.stamp = raw.header.stamp = keyframes_.back().stamp;
+    nav_msgs::Path optimized;
+    optimized.header.frame_id = frame_;
+    optimized.header.stamp = keyframes_.back().stamp;
     for (const auto& keyframe : keyframes_) {
-      optimized.poses.push_back(pose(keyframe, true)); raw.poses.push_back(pose(keyframe, false));
+      optimized.poses.push_back(pose(keyframe));
     }
-    path_pub_.publish(optimized); raw_path_pub_.publish(raw);
+    path_pub_.publish(optimized);
   }
   void publishEdges() {
     visualization_msgs::Marker marker;
@@ -428,69 +446,92 @@ class LoopClosure {
     marker.pose.orientation.w = 1;
     marker.scale.x = 0.12; marker.color.r = 1; marker.color.b = 1; marker.color.a = 1;
     for (const auto& edge : edges_) {
-      marker.points.push_back(pose(keyframes_[edge.first], true).pose.position);
-      marker.points.push_back(pose(keyframes_[edge.second], true).pose.position);
+      marker.points.push_back(pose(keyframes_[edge.first]).pose.position);
+      marker.points.push_back(pose(keyframes_[edge.second]).pose.position);
     }
     visualization_msgs::MarkerArray array; array.markers.push_back(marker); edge_pub_.publish(array);
   }
-  void publishCloud(const ros::Publisher& publisher, const Cloud::ConstPtr& cloud, const ros::Time& stamp) {
+  bool publishMapCloud(const Cloud::ConstPtr& cloud, const MapSnapshot& snapshot) {
     sensor_msgs::PointCloud2 msg; pcl::toROSMsg(*cloud, msg);
-    msg.header.frame_id = frame_; msg.header.stamp = stamp; publisher.publish(msg);
+    const auto stamp = snapshot.keyframes.back().stamp;
+    msg.header.frame_id = frame_; msg.header.stamp = stamp;
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    if (snapshot.revision < latest_requested_revision_ ||
+        (snapshot.revision == latest_requested_revision_ && snapshot.keyframes.size() < latest_requested_count_) ||
+        stamp < published_map_stamp_ || snapshot.revision < published_map_revision_) return false;
+    map_pub_.publish(msg);
+    published_map_stamp_ = stamp; published_map_revision_ = snapshot.revision;
+    return true;
   }
-  std::pair<Cloud::Ptr, Cloud::Ptr> maps(const Keyframes& snapshot) const {
-    VoxelMap raw(map_voxel_), optimized(map_voxel_);
-    for (const auto& keyframe : snapshot) {
-      raw.add(*keyframe.cloud, keyframe.raw.matrix());
-      optimized.add(*keyframe.cloud, keyframe.optimized.matrix());
+  void enqueueMap(std::unique_ptr<MapSnapshot> snapshot) {
+    {
+      std::lock_guard<std::mutex> lock(map_mutex_);
+      latest_requested_revision_ = std::max(latest_requested_revision_, snapshot->revision);
+      latest_requested_count_ = snapshot->keyframes.size();
+      if (snapshot->export_files) {
+        if (map_saves_.size() >= 2) throw std::runtime_error("Map export queue full");
+        map_saves_.push_back(std::move(snapshot));
+      } else if (!discard_display_maps_) map_pending_ = std::move(snapshot);
     }
-    return {raw.cloud(), optimized.cloud()};
-  }
-  void publishMapClouds(const std::pair<Cloud::Ptr, Cloud::Ptr>& clouds,
-      const ros::Time& stamp, size_t revision) {
-    std::lock_guard<std::mutex> lock(map_publish_mutex_);
-    if (stamp < published_map_stamp_ || revision < published_map_revision_) return;
-    publishCloud(raw_map_pub_, clouds.first, stamp);
-    publishCloud(map_pub_, clouds.second, stamp);
-    published_map_stamp_ = stamp; published_map_revision_ = revision;
+    map_condition_.notify_one();
   }
   void requestMap() {
     refreshPoses();
     if (!edges_.empty()) updateCorrection();
-    std::unique_ptr<MapSnapshot> snapshot(new MapSnapshot{keyframes_, map_revision_});
-    {
-      std::lock_guard<std::mutex> lock(map_mutex_);
-      map_pending_ = std::move(snapshot);  // only the newest display snapshot is needed
-    }
-    last_map_ = ros::WallTime::now(); map_condition_.notify_one();
+    enqueueMap(std::unique_ptr<MapSnapshot>(new MapSnapshot{keyframes_, map_revision_}));
+    last_map_ = ros::WallTime::now();
   }
   void stopMapWorker() {
     { std::lock_guard<std::mutex> lock(map_mutex_); map_stopping_ = true; map_pending_.reset(); }
     map_condition_.notify_one();
     if (map_worker_.joinable()) map_worker_.join();
   }
+  void saveMap(const Cloud::ConstPtr& cloud) {
+    if (pcl::io::savePCDFileBinary(output_ + "/map_optimized.pcd", *cloud) != 0)
+      throw std::runtime_error("Cannot save map_optimized.pcd");
+  }
   void mapWork() {
-    VoxelMap raw(map_voxel_), optimized(map_voxel_);
-    size_t raw_count = 0, optimized_count = 0, revision = 0;
+    VoxelMap optimized(map_voxel_);
+    size_t count = 0, revision = std::numeric_limits<size_t>::max();
     for (;;) {
       std::unique_ptr<MapSnapshot> snapshot;
       {
         std::unique_lock<std::mutex> lock(map_mutex_);
-        map_condition_.wait(lock, [&] { return map_stopping_ || map_pending_; });
-        if (map_stopping_) break;
-        snapshot = std::move(map_pending_);
+        map_condition_.wait(lock, [&] { return map_stopping_ || map_pending_ || !map_saves_.empty(); });
+        if (!map_saves_.empty()) {
+          snapshot = std::move(map_saves_.front()); map_saves_.pop_front();
+        } else {
+          if (map_stopping_) break;
+          snapshot = std::move(map_pending_);
+        }
       }
       try {
-        if (snapshot->revision != revision) {
-          optimized.clear(); optimized_count = 0; revision = snapshot->revision;
+        if (snapshot->revision != revision || snapshot->keyframes.size() < count) {
+          optimized.clear(); count = 0; revision = snapshot->revision;
         }
-        for (; raw_count < snapshot->keyframes.size(); ++raw_count) {
-          const auto& k = snapshot->keyframes[raw_count]; raw.add(*k.cloud, k.raw.matrix());
+        bool cancelled = false;
+        for (; count < snapshot->keyframes.size(); ++count) {
+          if (!snapshot->export_files) {
+            std::lock_guard<std::mutex> lock(map_mutex_);
+            if (discard_display_maps_ || map_stopping_ || snapshot->revision < latest_requested_revision_ || !map_saves_.empty()) {
+              cancelled = true; break;
+            }
+          }
+          const auto& k = snapshot->keyframes[count];
+          optimized.add(*k.cloud, k.optimized.matrix());
         }
-        for (; optimized_count < snapshot->keyframes.size(); ++optimized_count) {
-          const auto& k = snapshot->keyframes[optimized_count]; optimized.add(*k.cloud, k.optimized.matrix());
-        }
-        publishMapClouds({raw.cloud(), optimized.cloud()}, snapshot->keyframes.back().stamp, revision);
-      } catch (const std::exception& e) { ROS_ERROR_STREAM("Loop map publication failed: " << e.what()); }
+        if (cancelled) continue;
+        const auto cloud = optimized.cloud();
+        if (snapshot->export_files) saveMap(cloud);
+        publishMapCloud(cloud, *snapshot);
+        if (snapshot->save) snapshot->save->set_value(output_);
+        if (snapshot->export_files)
+          ROS_INFO_STREAM("Saved " << snapshot->keyframes.size() << " keyframes to " << output_);
+      } catch (const std::exception& e) {
+        ROS_ERROR_STREAM("Loop map task failed: " << e.what());
+        if (snapshot->save) snapshot->save->set_exception(std::current_exception());
+        optimized.clear(); count = 0; revision = std::numeric_limits<size_t>::max();
+      }
     }
   }
   void publishStatus() {
@@ -503,48 +544,32 @@ class LoopClosure {
            << ",\"dropped_odom\":" << dropped_odom_ << ",\"dropped_cloud\":" << dropped_cloud_
            << ",\"dropped_pairs\":" << dropped_pairs_;
     }
-    text << ",\"invalid_inputs\":" << invalid_inputs_ << ",\"output\":" << std::quoted(output_) << '}';
-    std_msgs::String msg; msg.data = text.str(); status_pub_.publish(msg);
-    std::ofstream status(output_ + "/status.json"); status << text.str() << '\n';
+    text << ",\"invalid_inputs\":" << invalid_inputs_ << ",\"output\":" << std::quoted(output_);
+    std_msgs::String msg; msg.data = text.str() + "}"; status_pub_.publish(msg);
   }
-  void exportResults() {
+  void exportResults(std::shared_ptr<std::promise<std::string>> save = nullptr) {
     if (keyframes_.empty()) throw std::runtime_error("No keyframes to save");
     refreshPoses();
     if (!edges_.empty()) updateCorrection();
-    std::ofstream times(output_ + "/keyframe_times.txt"), raw(output_ + "/trajectory_raw.tum"), optimized(output_ + "/trajectory_optimized.tum");
-    times << std::fixed << std::setprecision(9);
-    raw << std::fixed << std::setprecision(9); optimized << std::fixed << std::setprecision(9);
-    for (const auto& keyframe : keyframes_) {
-      times << keyframe.id << ' ' << keyframe.stamp.toSec() << '\n';
-      for (bool use_optimized : {false, true}) {
-        const auto p = pose(keyframe, use_optimized).pose;
-        auto& out = use_optimized ? optimized : raw;
-        out << keyframe.stamp.toSec() << ' ' << p.position.x << ' ' << p.position.y << ' ' << p.position.z << ' '
-            << p.orientation.x << ' ' << p.orientation.y << ' ' << p.orientation.z << ' ' << p.orientation.w << '\n';
-      }
-    }
-    const auto clouds = maps(keyframes_);
-    if (!times || !raw || !optimized ||
-        pcl::io::savePCDFileBinary(output_ + "/map_raw.pcd", *clouds.first) != 0 ||
-        pcl::io::savePCDFileBinary(output_ + "/map_optimized.pcd", *clouds.second) != 0)
-      throw std::runtime_error("Failed to save loop results");
-    publishMapClouds(clouds, keyframes_.back().stamp, map_revision_);
-    publishPaths(); publishEdges();
-    publishStatus(); loops_.flush();
-    ROS_INFO_STREAM("Saved " << keyframes_.size() << " keyframes and " << edges_.size() << " loops to " << output_);
+    std::unique_ptr<MapSnapshot> snapshot(new MapSnapshot{keyframes_, map_revision_});
+    snapshot->export_files = true; snapshot->save = std::move(save);
+    enqueueMap(std::move(snapshot));
+    publishPaths(); publishEdges(); publishStatus();
   }
 
   ros::NodeHandle node_, private_;
   ros::Subscriber odom_sub_, cloud_sub_, highrate_sub_;
-  ros::Publisher path_pub_, raw_path_pub_, map_pub_, raw_map_pub_, edge_pub_, source_pub_, target_pub_, aligned_pub_, status_pub_;
+  ros::Publisher path_pub_, map_pub_, edge_pub_, status_pub_;
   ros::Publisher corrected_odom_pub_, corrected_highrate_pub_, correction_pub_;
   ros::ServiceServer save_service_;
   std::mutex mutex_; std::condition_variable condition_; std::thread worker_;
   bool stopping_ = false, gravity_align_ = false;
-  std::mutex map_mutex_, map_publish_mutex_, correction_mutex_;
+  std::mutex map_mutex_, correction_mutex_;
   std::condition_variable map_condition_; std::thread map_worker_;
   std::unique_ptr<MapSnapshot> map_pending_;
-  bool map_stopping_ = false, have_previous_raw_ = false;
+  std::deque<std::unique_ptr<MapSnapshot>> map_saves_;
+  size_t latest_requested_revision_ = 0, latest_requested_count_ = 0;
+  bool map_stopping_ = false, discard_display_maps_ = false, have_previous_raw_ = false;
   size_t map_revision_ = 0, published_map_revision_ = 0;
   gtsam::Pose3 previous_raw_, correction_;
   ros::Time correction_stamp_, published_map_stamp_, last_query_stamp_;
@@ -557,7 +582,6 @@ class LoopClosure {
   SCManager sc_; RegistrationConfig registration_;
   std::unique_ptr<gtsam::ISAM2> isam_;
   gtsam::SharedNoiseModel prior_noise_, odom_noise_, loop_noise_;
-  std::ofstream loops_;
   std::string frame_, body_frame_, corrected_body_frame_, output_;
   ros::Time last_stamp_, last_loop_stamp_; ros::WallTime last_map_, last_path_;
   double translation_, rotation_, cloud_voxel_, min_interval_, loop_interval_, detection_period_, map_voxel_, map_period_;
@@ -567,10 +591,16 @@ class LoopClosure {
 }  // namespace loop_fusion
 
 int main(int argc, char** argv) {
-  ros::init(argc, argv, "fastlio_loop");
+  ros::init(argc, argv, "fastlio_loop", ros::init_options::NoSigintHandler);
+  std::signal(SIGINT, loop_fusion::signalHandler);
   try {
     loop_fusion::LoopClosure loop;
-    ros::AsyncSpinner spinner(2); spinner.start(); ros::waitForShutdown(); spinner.stop();
+    ros::AsyncSpinner spinner(2); spinner.start();
+    // Keep ROS alive during Ctrl+C export, even after the bag's /clock stops.
+    ros::WallRate rate(100);
+    while (ros::ok() && !loop_fusion::exit_requested) rate.sleep();
+    loop.stop();
+    spinner.stop();
   } catch (const std::exception& e) { ROS_FATAL_STREAM(e.what()); return 1; }
   return 0;
 }

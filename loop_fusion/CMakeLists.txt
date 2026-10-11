@@ -15,6 +15,8 @@ add_definitions(${PCL_DEFINITIONS})
 add_library(loop_geometry src/registration.cpp include/scancontext/Scancontext.cpp)
 target_link_libraries(loop_geometry ${PCL_LIBRARIES})
 add_executable(fastlio_loop src/loop_closure.cpp)
+target_compile_definitions(fastlio_loop PRIVATE
+  DEFAULT_RESULTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/PCD")
 target_link_libraries(fastlio_loop loop_geometry gtsam ${catkin_LIBRARIES} Threads::Threads)
 install(TARGETS fastlio_loop loop_geometry
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

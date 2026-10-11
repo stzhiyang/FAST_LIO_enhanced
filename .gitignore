@@ -6,6 +6,7 @@ logs/
 .catkin_tools/
 .migration_backups/
 # Recorded data and generated maps
+/loop_fusion/PCD/
 *.bag
 *.bag.active
 *.pcd

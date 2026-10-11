@@ -1,6 +1,6 @@
 <launch>
   <arg name="config" default="$(find loop_fusion)/config/loop_closure.yaml"/>
-  <arg name="output_directory" default="/tmp/fastlio_loop_results"/>
+  <arg name="output_directory" default="$(find loop_fusion)/PCD"/>
   <arg name="rviz" default="true"/>
   <node pkg="loop_fusion" type="fastlio_loop" name="fastlio_loop" output="screen">
     <rosparam command="load" file="$(arg config)"/>
