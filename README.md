@@ -42,6 +42,10 @@ MulRan Riverside02 数据集上的轨迹与地图对比。左侧 **Before** 为�
 
 ![Riverside02 回环前后轨迹与地图对比：左侧 Before，右侧 After](assets/riverside02_loop_comparison.png)
 
+## 预建地图重定位
+
+独立的 `fastlio_localization` 模块使用预建 PCD 地图与同时间戳的 body 扫描、局部里程计，通过粗、精两级 ICP 更新地图系修正。支持 RViz `/initialpose` 粗初值和重新初始化，发布 `/localization/odometry`、`/localization/odometry_highrate` 及匹配状态。定位与 `loop_fusion` 并列接收前端数据，不叠加回环修正、不回写前端。运行说明保存在本地 `docs/localization/README.md`。
+
 ## 工程结构
 
 ```text
@@ -68,8 +72,3 @@ FAST_LIO_enhanced/
 
 前端 ROS 包名为 `fast_lio`，主节点为 `fastlio_mapping`；回环包名为 `loop_fusion`，后端节点为 `fastlio_loop`。
 
-## 上游与授权
-
-本项目基于 FAST_LIO 扩展。上游作者信息、论文引用及使用说明见 [FAST_LIO README](FAST_LIO/README.md)，授权条款见 [FAST_LIO/LICENSE](FAST_LIO/LICENSE)。
-
-Scan Context 作者为 Giseop Kim 与 Ayoung Kim，论文为 *Scan Context: Egocentric Spatial Descriptor for Place Recognition within 3D Point Cloud Map*（IROS 2018），项目见 [Scan Context](https://github.com/gisbi-kim/scancontext_tro)。SC-PGO 作者为 Giseop Kim，项目见 [FAST_LIO_SLAM](https://github.com/gisbi-kim/FAST_LIO_SLAM)。nanoflann 与 KD-tree 适配器的作者、版权和 BSD 授权声明保留在对应源码中。

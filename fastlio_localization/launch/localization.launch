@@ -1,0 +1,12 @@
+<launch>
+  <!-- 只启动定位模块；前端和传感器输入分别启动。 -->
+  <arg name="map"/>
+  <arg name="map_frame" default="map"/>
+  <arg name="frequency" default="0.5"/>
+  <node pkg="fastlio_localization" type="localization.py" name="localization" output="screen" required="true">
+    <env name="OMP_NUM_THREADS" value="2"/>
+    <param name="map_path" value="$(arg map)"/>
+    <param name="map_frame" value="$(arg map_frame)"/>
+    <param name="frequency" value="$(arg frequency)"/>
+  </node>
+</launch>
