@@ -46,6 +46,14 @@ MulRan Riverside02 数据集上的轨迹与地图对比。左侧 **Before** 为�
 
 独立的 `fastlio_localization` 模块使用预建 PCD 地图与同时间戳的 body 扫描、局部里程计，通过粗、精两级 ICP 更新地图系修正。支持 RViz `/initialpose` 粗初值和重新初始化，发布 `/localization/odometry`、`/localization/odometry_highrate` 及匹配状态。定位与 `loop_fusion` 并列接收前端数据，不叠加回环修正、不回写前端。运行说明保存在本地 `docs/localization/README.md`。
 
+### 效果对比
+
+AVIA 预建地图重定位数据上的轨迹与地图对比。橙色为仅使用给定粗初值的固定对齐轨迹，蓝色为周期 scan-to-map 重定位轨迹；实线为当前面板的主轨迹，虚线为对照，两图使用同一预建地图。
+
+![AVIA 预建地图重定位前后轨迹与地图对比](assets/relocate_localization_comparison.png)
+
+回放 788 s、约 1 km 轨迹，385 次匹配被接受，fitness 为 0.952～1.0，内点 RMSE 为 0.137～0.274 m；粗初值相对首次 ICP 修正的偏航误差约 4.4°，固定对齐与周期重定位轨迹最大相差约 22 m。配准指标与轨迹偏差用于说明重定位效果，不是绝对定位精度。
+
 ## 工程结构
 
 ```text
@@ -67,8 +75,12 @@ FAST_LIO_enhanced/
 │   ├── launch/               # 独立回环后端启动
 │   ├── rviz_cfg/             # 原始/优化轨迹与地图对比
 │   └── src/                  # 输入配对、回环验证、iSAM2 与结果导出
+├── fastlio_localization/
+│   ├── include/              # 参数、匹配与定位类定义
+│   ├── launch/               # 独立定位启动
+│   └── src/                  # 点云解码、两级 ICP、双频输出与节点入口
 └── README.md
 ```
 
-前端 ROS 包名为 `fast_lio`，主节点为 `fastlio_mapping`；回环包名为 `loop_fusion`，后端节点为 `fastlio_loop`。
+前端 ROS 包名为 `fast_lio`，主节点为 `fastlio_mapping`；回环包名为 `loop_fusion`，后端节点为 `fastlio_loop`；定位包名为 `fastlio_localization`，节点为 `fastlio_localization_node`。
 

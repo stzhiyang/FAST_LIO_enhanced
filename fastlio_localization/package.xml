@@ -2,21 +2,19 @@
 <package format="2">
   <name>fastlio_localization</name>
   <version>0.1.0</version>
-  <description>Independent two-stage scan-to-map localization for FAST-LIO.</description>
+  <description>Independent C++ two-stage scan-to-map localization for FAST-LIO.</description>
   <maintainer email="maintainer@example.com">FAST_LIO_enhanced maintainers</maintainer>
   <license>GPL-2.0-only</license>
   <author>HViktorTsoi and FAST_LIO_LOCALIZATION contributors</author>
   <buildtool_depend>catkin</buildtool_depend>
-  <exec_depend>rospy</exec_depend>
-  <exec_depend>message_filters</exec_depend>
-  <exec_depend>nav_msgs</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
-  <exec_depend>diagnostic_msgs</exec_depend>
-  <exec_depend>tf</exec_depend>
-  <exec_depend>tf2_ros</exec_depend>
-  <exec_depend>python3-numpy</exec_depend>
-  <exec_depend>python3-open3d</exec_depend>
-  <test_depend>rostest</test_depend>
+  <depend>roscpp</depend>
+  <depend>message_filters</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>libpcl-all-dev</depend>
+  <depend>eigen</depend>
 </package>
